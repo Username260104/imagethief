@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ImageThief Workbench</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="toolbar">
+        <div class="identity">
+          <strong>ImageThief</strong>
+          <span id="image-meta">Loading source...</span>
+        </div>
+        <div class="actions">
+          <button id="reset-button" type="button" disabled>Reset Selection</button>
+          <button id="copy-button" class="primary" type="button" disabled>Copy PNG</button>
+          <button id="close-button" type="button">Back</button>
+        </div>
+      </header>
+      <main class="workspace">
+        <canvas id="workbench-canvas" aria-label="Image workbench"></canvas>
+        <div id="message" class="message">Loading source...</div>
+      </main>
+      <footer class="statusbar">
+        <span id="status">Loading source...</span>
+        <span id="debug-readout"></span>
+      </footer>
+    </div>
+    <script type="module" src="/src/workbench/index.ts"></script>
+  </body>
+</html>

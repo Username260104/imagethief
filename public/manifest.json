@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "ImageThief",
+  "version": "0.1.0",
+  "description": "Pick a source image from a page, roughly cut an object, and copy a transparent PNG.",
+  "action": {
+    "default_title": "ImageThief"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+X",
+        "mac": "Command+Shift+X"
+      },
+      "description": "Start ImageThief image selection"
+    }
+  }
+}

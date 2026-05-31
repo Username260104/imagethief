@@ -1,0 +1,9 @@
+export const DEBUG = false;
+export const SESSION_STORAGE_PREFIX = "imagethief:session:";
+export const MAX_DECODED_PIXELS = 64_000_000;
+export const MIN_OBJECT_SELECTION_SIZE = 8;
+export const SELECTION_PADDING_RATIO = 0.08;
+export const OUTPUT_PADDING_MIN_PX = 4;
+export const OUTPUT_PADDING_RATIO = 0.02;
+export const MIN_FOREGROUND_RATIO = 0.01;
+export const MAX_FOREGROUND_RATIO = 0.95;

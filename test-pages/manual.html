@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ImageThief Manual Test</title>
+    <style>
+      body {
+        margin: 0;
+        background: #f4f0e8;
+        color: #222;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 32px 20px 80px;
+      }
+
+      h1 {
+        margin: 0 0 20px;
+        font-size: 28px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 18px;
+      }
+
+      figure {
+        margin: 0;
+        border: 1px solid #d4cbbd;
+        border-radius: 8px;
+        background: #fffdfa;
+        padding: 12px;
+      }
+
+      img,
+      .background-image {
+        display: block;
+        width: 100%;
+        height: 220px;
+        object-fit: cover;
+        border-radius: 6px;
+      }
+
+      .background-image {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='420' viewBox='0 0 640 420'%3E%3Crect width='640' height='420' fill='%23d8ceb9'/%3E%3Ccircle cx='228' cy='206' r='92' fill='%231f7a8c'/%3E%3Cpath d='M340 118 L500 310 L250 330 Z' fill='%23f97316'/%3E%3Cpath d='M0 360 C140 300 260 390 420 330 C520 292 570 310 640 280 L640 420 L0 420 Z' fill='%237a6a53'/%3E%3C/svg%3E");
+        background-position: center;
+        background-size: cover;
+      }
+
+      figcaption {
+        margin-top: 10px;
+        color: #62594e;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>ImageThief Manual Test</h1>
+      <div class="grid">
+        <figure>
+          <img
+            alt="Simple SVG test"
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='420' viewBox='0 0 640 420'%3E%3Crect width='640' height='420' fill='%23efe7da'/%3E%3Ccircle cx='250' cy='210' r='110' fill='%231f7a8c'/%3E%3Crect x='320' y='120' width='180' height='180' rx='24' fill='%23f97316'/%3E%3Cpath d='M80 340 C150 280 230 380 330 330 C440 275 520 370 600 300 L600 420 L80 420 Z' fill='%23675f51'/%3E%3C/svg%3E"
+          />
+          <figcaption>Regular img with a data URL source.</figcaption>
+        </figure>
+
+        <figure>
+          <img
+            alt="Srcset SVG test"
+            srcset="
+              data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='320' viewBox='0 0 480 320'%3E%3Crect width='480' height='320' fill='%23e8eef0'/%3E%3Ccircle cx='190' cy='160' r='78' fill='%23d4503f'/%3E%3Crect x='245' y='84' width='130' height='160' fill='%231f7a8c'/%3E%3C/svg%3E 1x,
+              data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='960' height='640' viewBox='0 0 960 640'%3E%3Crect width='960' height='640' fill='%23e8eef0'/%3E%3Ccircle cx='380' cy='320' r='156' fill='%23d4503f'/%3E%3Crect x='490' y='168' width='260' height='320' fill='%231f7a8c'/%3E%3C/svg%3E 2x
+            "
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='320' viewBox='0 0 480 320'%3E%3Crect width='480' height='320' fill='%23e8eef0'/%3E%3Ccircle cx='190' cy='160' r='78' fill='%23d4503f'/%3E%3Crect x='245' y='84' width='130' height='160' fill='%231f7a8c'/%3E%3C/svg%3E"
+          />
+          <figcaption>srcset/currentSrc candidate.</figcaption>
+        </figure>
+
+        <figure>
+          <div class="background-image" role="img" aria-label="CSS background test"></div>
+          <figcaption>Single URL CSS background-image candidate.</figcaption>
+        </figure>
+      </div>
+    </main>
+  </body>
+</html>

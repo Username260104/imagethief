@@ -1,0 +1,95 @@
+# ImageThief
+
+ImageThief는 웹페이지에서 원본 이미지를 고른 뒤, 확장 프로그램 작업 화면에서 물체를 거칠게 따서 투명 PNG로 클립보드에 복사하는 Chrome MV3 확장 프로그램입니다.
+
+깨끗한 AI 누끼 도구가 아닙니다. 옛날 빠른 선택 도구나 매직완드처럼 조금 틀린 hard alpha 윤곽을 만드는 MVP입니다.
+
+## 개발 설치
+
+```bash
+npm install
+npm run build
+```
+
+Chrome에서 설치:
+
+1. `chrome://extensions`를 엽니다.
+2. Developer mode를 켭니다.
+3. Load unpacked를 누릅니다.
+4. 이 프로젝트의 `dist` 폴더를 선택합니다.
+
+단축키는 기본값으로 Windows/Linux `Ctrl+Shift+X`, macOS `Command+Shift+X`를 제안합니다. 충돌이 있으면 `chrome://extensions/shortcuts`에서 변경합니다.
+
+## 기본 사용
+
+1. 웹페이지에서 확장 프로그램 아이콘을 누르거나 단축키를 입력합니다.
+2. 이미지 후보에 마우스를 올리면 주황색 하이라이트가 표시됩니다.
+3. 이미지를 클릭하면 새 탭의 workbench가 열립니다.
+4. 원본 이미지 위에서 오려낼 물체 주변을 사각형으로 드래그합니다.
+5. rough preview가 생성되면 `Copy PNG`를 눌러 클립보드에 복사합니다.
+6. 다시 선택하려면 `Reset Selection`을 누릅니다.
+
+## MVP 확정 기본값
+
+```text
+작업 화면은 새 탭의 extension page로 연다.
+물체 선택은 사각형 rect seed 방식만 구현한다.
+lasso 선택은 타입 확장 가능성만 남기고 MVP에서는 UI로 제공하지 않는다.
+윤곽선 생성 후 자동 클립보드 복사는 시도하지 않는다.
+사용자가 Copy PNG 버튼을 눌렀을 때만 클립보드 복사를 시도한다.
+클립보드 복사 실패 시 다운로드 fallback은 제공하지 않는다.
+원본 이미지 fetch/decode 실패 시 viewport screenshot fallback은 제공하지 않는다.
+사용자에게 보이는 짧은 상태/오류 메시지는 영어로 작성한다.
+```
+
+## 권한
+
+```text
+activeTab: 현재 탭에서 이미지 선택 모드를 실행합니다.
+scripting: content script를 현재 탭에 주입합니다.
+storage: workbench session metadata를 chrome.storage.session에 임시 저장합니다.
+clipboardWrite: PNG를 클립보드에 복사합니다.
+host_permissions: 선택된 원본 이미지 fetch/decode 성공률을 높입니다.
+```
+
+이미지를 외부 서버로 업로드하지 않고, 선택 히스토리를 영구 저장하지 않습니다.
+
+## 알려진 한계
+
+```text
+원본 이미지 URL이 없으면 작업할 수 없습니다.
+fetch가 막힌 이미지는 작업할 수 없습니다.
+canvas/WebGL/video는 MVP 원본 선택 대상이 아닙니다.
+cross-origin iframe 내부 이미지는 탐색하지 못할 수 있습니다.
+복잡한 CSS background layer는 지원하지 않습니다.
+정교한 object segmentation은 목표가 아닙니다.
+머리카락/털 경계는 제대로 처리하지 않습니다.
+결과물은 의도적으로 거칠게 나옵니다.
+클립보드 쓰기는 브라우저 정책에 따라 실패할 수 있습니다.
+```
+
+## 수동 테스트 체크리스트
+
+`test-pages/manual.html`을 로컬 HTTP 서버로 열거나 임의의 웹페이지에서 테스트합니다. `file://` 페이지는 Chrome의 확장 프로그램 파일 URL 접근 설정에 따라 동작하지 않을 수 있습니다.
+
+```text
+일반 <img> 이미지 선택
+srcset/currentSrc 이미지 선택
+CSS background-image 단일 URL 선택
+상대 URL 이미지 선택
+cross-origin CDN 이미지 선택
+fetch가 막히는 이미지 실패 상태
+큰 이미지 제한 상태
+작은 이미지 선택
+브라우저 zoom 125%
+작업 화면 리사이즈 후 좌표 매핑
+이미지 가장자리 근처 물체 선택
+너무 작은 물체 선택
+복잡한 배경의 물체
+배경과 색이 비슷한 물체
+emergency mask fallback
+Copy PNG 성공
+Copy PNG 실패 후 재시도
+ESC로 웹페이지 이미지 선택 취소
+Reset Selection으로 workbench 선택 초기화
+```
