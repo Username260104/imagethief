@@ -1,31 +1,40 @@
 import {
-  BRUSH_POINT_SPACING_CSS_PX,
-  BRUSH_RADIUS_CSS_PX,
   DEBUG,
-  MAX_BRUSH_IMAGE_RADIUS,
+  LASSO_POINT_SPACING_CSS_PX,
   MAX_DECODED_PIXELS,
-  MIN_BRUSH_IMAGE_RADIUS,
-  MIN_FOREGROUND_SEED_POINTS,
+  MIN_LASSO_AREA_PX,
+  MIN_LASSO_POINTS,
   MIN_OBJECT_SELECTION_SIZE,
   SESSION_STORAGE_PREFIX
 } from "../shared/constants";
 import type {
-  BrushSeedPoint,
   DisplayTransform,
   ImagePixelPoint,
   ImagePixelRect,
+  LassoSeedSelection,
   ObjectSeedSelection,
   WorkbenchSession,
   WorkbenchState
 } from "../shared/types";
-import { createRoughMask, type MaskResult } from "./segmentation";
+import {
+  createRoughMask,
+  DEFAULT_MASK_TUNING_OPTIONS,
+  type MaskResult,
+  type MaskTuningOptions
+} from "./segmentation";
 import "./style.css";
 
 type DecodedImage = ImageBitmap | HTMLImageElement;
 
-type BrushStrokeState = {
+type LassoStrokeState = {
   pointerId: number;
-  points: BrushSeedPoint[];
+  polygon: ImagePixelPoint[];
+};
+
+type ParameterControl = {
+  key: keyof MaskTuningOptions;
+  input: HTMLInputElement;
+  output: HTMLOutputElement;
 };
 
 const canvas = requiredElement<HTMLCanvasElement>("#workbench-canvas");
@@ -36,18 +45,53 @@ const messageElement = requiredElement<HTMLElement>("#message");
 const resetButton = requiredElement<HTMLButtonElement>("#reset-button");
 const copyButton = requiredElement<HTMLButtonElement>("#copy-button");
 const closeButton = requiredElement<HTMLButtonElement>("#close-button");
+const parameterPanel = requiredElement<HTMLElement>("#parameter-panel");
+const resetParametersButton = requiredElement<HTMLButtonElement>("#reset-parameters-button");
 const context = requiredCanvasContext(canvas);
+const parameterControls: ParameterControl[] = [
+  {
+    key: "sensitivity",
+    input: requiredElement<HTMLInputElement>("#sensitivity-input"),
+    output: requiredElement<HTMLOutputElement>("#sensitivity-value")
+  },
+  {
+    key: "expansion",
+    input: requiredElement<HTMLInputElement>("#expansion-input"),
+    output: requiredElement<HTMLOutputElement>("#expansion-value")
+  },
+  {
+    key: "edgeCleanup",
+    input: requiredElement<HTMLInputElement>("#edge-cleanup-input"),
+    output: requiredElement<HTMLOutputElement>("#edge-cleanup-value")
+  },
+  {
+    key: "outputPadding",
+    input: requiredElement<HTMLInputElement>("#output-padding-input"),
+    output: requiredElement<HTMLOutputElement>("#output-padding-value")
+  },
+  {
+    key: "seedInfluence",
+    input: requiredElement<HTMLInputElement>("#seed-influence-input"),
+    output: requiredElement<HTMLOutputElement>("#seed-influence-value")
+  },
+  {
+    key: "roughness",
+    input: requiredElement<HTMLInputElement>("#roughness-input"),
+    output: requiredElement<HTMLOutputElement>("#roughness-value")
+  }
+];
 
 let state: WorkbenchState = "loading-source";
 let session: WorkbenchSession | null = null;
 let sourceCanvas: HTMLCanvasElement | null = null;
 let displayTransform: DisplayTransform = { scale: 1, offsetX: 0, offsetY: 0 };
-let strokeState: BrushStrokeState | null = null;
-let brushCursorPoint: BrushSeedPoint | null = null;
+let lassoState: LassoStrokeState | null = null;
 let lastSelection: ObjectSeedSelection | null = null;
 let maskResult: MaskResult | null = null;
 let previewCanvas: HTMLCanvasElement | null = null;
 let pngBlob: Blob | null = null;
+let maskTuningOptions: MaskTuningOptions = cloneDefaultMaskTuningOptions();
+let parameterReprocessTimer = 0;
 
 const resizeObserver = new ResizeObserver(() => {
   resizeCanvas();
@@ -59,7 +103,6 @@ canvas.addEventListener("pointerdown", handlePointerDown);
 canvas.addEventListener("pointermove", handlePointerMove);
 canvas.addEventListener("pointerup", handlePointerUp);
 canvas.addEventListener("pointercancel", cancelDrag);
-canvas.addEventListener("pointerleave", handlePointerLeave);
 window.addEventListener("keydown", handleKeydown);
 resetButton.addEventListener("click", resetSelection);
 copyButton.addEventListener("click", () => {
@@ -68,6 +111,11 @@ copyButton.addEventListener("click", () => {
 closeButton.addEventListener("click", () => {
   window.close();
 });
+resetParametersButton.addEventListener("click", resetParameters);
+for (const control of parameterControls) {
+  control.input.addEventListener("input", handleParameterInput);
+}
+syncParameterInputs();
 
 void initialize();
 
@@ -78,7 +126,7 @@ async function initialize(): Promise<void> {
     session = await loadSession();
     metaElement.textContent = hostLabel(session.candidate.imageUrl);
     await loadSourceImage(session.candidate.imageUrl);
-    setState("ready", "Brush the object interior.");
+    setState("ready", "Trace inside the object.");
     draw();
   } catch (error) {
     console.debug("ImageThief load failure", error);
@@ -195,9 +243,12 @@ function draw(): void {
     sourceCanvas.height * displayTransform.scale
   );
 
-  const seedPoints = strokeState?.points ?? lastSelection?.points ?? [];
-  if (seedPoints.length > 0) {
-    drawBrushSeed(seedPoints, strokeState ? "rgba(249,115,22,0.24)" : "rgba(249,115,22,0.16)");
+  if (lastSelection?.kind === "lasso") {
+    drawLassoPath(lastSelection.polygon, {
+      fill: "rgba(249,115,22,0.10)",
+      stroke: "rgba(249,115,22,0.45)",
+      lineWidth: 1.5
+    });
   }
 
   if (previewCanvas && maskResult) {
@@ -210,12 +261,16 @@ function draw(): void {
     );
   }
 
-  if (lastSelection) {
-    drawSelectionBounds(lastSelection.bounds);
+  if (lassoState?.polygon.length) {
+    drawLassoPath(lassoState.polygon, {
+      fill: "rgba(249,115,22,0.14)",
+      stroke: "rgba(249,115,22,0.95)",
+      lineWidth: 2
+    });
   }
 
-  if (brushCursorPoint && (state === "ready" || state === "selecting-object" || state === "preview-ready" || state === "copied")) {
-    drawBrushCursor(brushCursorPoint);
+  if (lastSelection) {
+    drawSelectionBounds(lastSelection.bounds);
   }
 }
 
@@ -270,32 +325,37 @@ function drawSelectionBounds(rect: ImagePixelRect): void {
   context.restore();
 }
 
-function drawBrushSeed(points: BrushSeedPoint[], fill: string): void {
+function drawLassoPath(
+  points: ImagePixelPoint[],
+  style: { fill: string; stroke: string; lineWidth: number }
+): void {
+  if (points.length === 0) {
+    return;
+  }
+
   context.save();
-  context.fillStyle = fill;
-  context.strokeStyle = "rgba(249,115,22,0.45)";
-  context.lineWidth = 1;
-  for (const point of points) {
-    const x = displayTransform.offsetX + point.x * displayTransform.scale;
-    const y = displayTransform.offsetY + point.y * displayTransform.scale;
-    const radius = Math.max(1, point.radius * displayTransform.scale);
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
+  context.beginPath();
+  const first = points[0];
+  context.moveTo(
+    displayTransform.offsetX + first.x * displayTransform.scale,
+    displayTransform.offsetY + first.y * displayTransform.scale
+  );
+
+  for (const point of points.slice(1)) {
+    context.lineTo(
+      displayTransform.offsetX + point.x * displayTransform.scale,
+      displayTransform.offsetY + point.y * displayTransform.scale
+    );
+  }
+
+  if (points.length > 2) {
+    context.closePath();
+    context.fillStyle = style.fill;
     context.fill();
   }
-  context.restore();
-}
 
-function drawBrushCursor(point: BrushSeedPoint): void {
-  const x = displayTransform.offsetX + point.x * displayTransform.scale;
-  const y = displayTransform.offsetY + point.y * displayTransform.scale;
-
-  context.save();
-  context.strokeStyle = "#111827";
-  context.lineWidth = 1.5;
-  context.setLineDash([4, 4]);
-  context.beginPath();
-  context.arc(x, y, BRUSH_RADIUS_CSS_PX, 0, Math.PI * 2);
+  context.strokeStyle = style.stroke;
+  context.lineWidth = style.lineWidth;
   context.stroke();
   context.restore();
 }
@@ -305,58 +365,64 @@ function handlePointerDown(event: PointerEvent): void {
     return;
   }
 
-  const point = displayPointToBrushPoint(event.clientX, event.clientY);
+  const point = displayPointToImagePoint(event.clientX, event.clientY);
   if (!point) {
     return;
   }
 
+  event.preventDefault();
+  window.clearTimeout(parameterReprocessTimer);
   canvas.setPointerCapture(event.pointerId);
-  strokeState = {
+  lassoState = {
     pointerId: event.pointerId,
-    points: [point]
+    polygon: [point]
   };
-  brushCursorPoint = point;
   pngBlob = null;
   maskResult = null;
   previewCanvas = null;
   lastSelection = null;
-  setState("selecting-object", "Selecting object...");
+  setState("selecting-object", "Drawing lasso seed...");
   draw();
 }
 
 function handlePointerMove(event: PointerEvent): void {
-  const point = displayPointToBrushPoint(event.clientX, event.clientY);
+  if (!lassoState || event.pointerId !== lassoState.pointerId) {
+    return;
+  }
+
+  const point = displayPointToImagePoint(event.clientX, event.clientY);
   if (!point) {
-    if (!strokeState) {
-      brushCursorPoint = null;
-      draw();
-    }
     return;
   }
 
-  brushCursorPoint = point;
-  if (!strokeState) {
-    draw();
-    return;
-  }
-
-  const lastPoint = strokeState.points.at(-1);
-  if (!lastPoint || imageDistance(lastPoint, point) >= brushPointSpacingImagePx()) {
-    strokeState.points.push(point);
+  event.preventDefault();
+  const lastPoint = lassoState.polygon.at(-1);
+  if (!lastPoint || imageDistance(lastPoint, point) >= lassoPointSpacingImagePx()) {
+    lassoState.polygon.push(point);
   }
   draw();
 }
 
 function handlePointerUp(event: PointerEvent): void {
-  if (!strokeState || event.pointerId !== strokeState.pointerId) {
+  if (!lassoState || event.pointerId !== lassoState.pointerId) {
     return;
   }
 
-  const selection = selectionFromBrushPoints(strokeState.points);
-  canvas.releasePointerCapture(event.pointerId);
-  strokeState = null;
+  const point = displayPointToImagePoint(event.clientX, event.clientY);
+  if (point) {
+    const lastPoint = lassoState.polygon.at(-1);
+    if (!lastPoint || imageDistance(lastPoint, point) >= 1) {
+      lassoState.polygon.push(point);
+    }
+  }
 
-  if (isBrushSelectionTooSmall(selection)) {
+  const selection = selectionFromLassoPoints(lassoState.polygon);
+  if (canvas.hasPointerCapture(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+  lassoState = null;
+
+  if (isLassoSelectionTooSmall(selection)) {
     lastSelection = null;
     setState("ready", "Selection is too small");
     draw();
@@ -368,17 +434,8 @@ function handlePointerUp(event: PointerEvent): void {
 }
 
 function cancelDrag(): void {
-  strokeState = null;
-  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Brush the object interior." : "Loading source...");
-  draw();
-}
-
-function handlePointerLeave(): void {
-  if (strokeState) {
-    return;
-  }
-
-  brushCursorPoint = null;
+  lassoState = null;
+  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Trace inside the object." : "Loading source...");
   draw();
 }
 
@@ -387,7 +444,7 @@ function handleKeydown(event: KeyboardEvent): void {
     return;
   }
 
-  if (strokeState) {
+  if (lassoState) {
     event.preventDefault();
     cancelDrag();
     return;
@@ -408,7 +465,16 @@ async function processSelection(selection: ObjectSeedSelection): Promise<void> {
     setState("processing-mask", "Creating rough outline...");
     draw();
     await nextFrame();
-    maskResult = createRoughMask(sourceCanvas, selection);
+    maskResult = createRoughMask(sourceCanvas, selection, maskTuningOptions);
+    if (!maskResult) {
+      previewCanvas = null;
+      pngBlob = null;
+      setState("ready", "No confident mask. Adjust parameters or trace a tighter lasso.");
+      debug("mask confidence", "empty");
+      draw();
+      return;
+    }
+
     previewCanvas = createPreviewCanvas(maskResult);
     pngBlob = await createPngBlob(sourceCanvas, maskResult);
     setState("preview-ready", maskResult.usedEmergency ? "Preview ready (rough fallback)" : "Preview ready");
@@ -423,13 +489,56 @@ async function processSelection(selection: ObjectSeedSelection): Promise<void> {
 }
 
 function resetSelection(): void {
-  strokeState = null;
+  window.clearTimeout(parameterReprocessTimer);
+  lassoState = null;
   lastSelection = null;
   maskResult = null;
   previewCanvas = null;
   pngBlob = null;
-  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Brush the object interior." : "Loading source...");
+  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Trace inside the object." : "Loading source...");
   draw();
+}
+
+function resetParameters(): void {
+  window.clearTimeout(parameterReprocessTimer);
+  maskTuningOptions = cloneDefaultMaskTuningOptions();
+  syncParameterInputs();
+  if (lastSelection) {
+    void processSelection(lastSelection);
+    return;
+  }
+
+  updateParameterPanelState();
+}
+
+function handleParameterInput(): void {
+  maskTuningOptions = readMaskTuningOptionsFromInputs();
+  syncParameterOutputs();
+  scheduleParameterReprocess();
+}
+
+function scheduleParameterReprocess(): void {
+  window.clearTimeout(parameterReprocessTimer);
+  if (
+    !lastSelection ||
+    state === "loading-source" ||
+    state === "selecting-object" ||
+    state === "processing-mask" ||
+    state === "copying" ||
+    state === "failed"
+  ) {
+    updateParameterPanelState();
+    return;
+  }
+
+  pngBlob = null;
+  copyButton.disabled = true;
+  statusElement.textContent = "Adjusting preview...";
+  parameterReprocessTimer = window.setTimeout(() => {
+    if (lastSelection) {
+      void processSelection(lastSelection);
+    }
+  }, 150);
 }
 
 async function copyPng(): Promise<void> {
@@ -578,24 +687,12 @@ function displayPointToImagePoint(clientX: number, clientY: number): ImagePixelP
   };
 }
 
-function displayPointToBrushPoint(clientX: number, clientY: number): BrushSeedPoint | null {
-  const point = displayPointToImagePoint(clientX, clientY);
-  if (!point) {
-    return null;
-  }
-
-  return {
-    ...point,
-    radius: brushRadiusImagePx()
-  };
-}
-
-function selectionFromBrushPoints(points: BrushSeedPoint[]): ObjectSeedSelection {
+function selectionFromLassoPoints(points: ImagePixelPoint[]): LassoSeedSelection {
   if (!sourceCanvas || points.length === 0) {
     return {
-      kind: "brush",
+      kind: "lasso",
       bounds: { x: 0, y: 0, width: 0, height: 0 },
-      points: []
+      polygon: []
     };
   }
 
@@ -605,10 +702,10 @@ function selectionFromBrushPoints(points: BrushSeedPoint[]): ObjectSeedSelection
   let maxY = Number.NEGATIVE_INFINITY;
 
   for (const point of points) {
-    minX = Math.min(minX, point.x - point.radius);
-    minY = Math.min(minY, point.y - point.radius);
-    maxX = Math.max(maxX, point.x + point.radius);
-    maxY = Math.max(maxY, point.y + point.radius);
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
   }
 
   const x = clamp(Math.floor(minX), 0, Math.max(0, sourceCanvas.width - 1));
@@ -617,39 +714,42 @@ function selectionFromBrushPoints(points: BrushSeedPoint[]): ObjectSeedSelection
   const bottom = clamp(Math.ceil(maxY), y + 1, sourceCanvas.height);
 
   return {
-    kind: "brush",
+    kind: "lasso",
     bounds: {
       x,
       y,
       width: right - x,
       height: bottom - y
     },
-    points
+    polygon: points.slice()
   };
 }
 
-function isBrushSelectionTooSmall(selection: ObjectSeedSelection): boolean {
+function isLassoSelectionTooSmall(selection: LassoSeedSelection): boolean {
   return (
-    selection.points.length < MIN_FOREGROUND_SEED_POINTS ||
+    selection.polygon.length < MIN_LASSO_POINTS ||
     selection.bounds.width < MIN_OBJECT_SELECTION_SIZE ||
-    selection.bounds.height < MIN_OBJECT_SELECTION_SIZE
+    selection.bounds.height < MIN_OBJECT_SELECTION_SIZE ||
+    polygonArea(selection.polygon) < MIN_LASSO_AREA_PX
   );
 }
 
-function brushRadiusImagePx(): number {
-  return clamp(
-    Math.round(BRUSH_RADIUS_CSS_PX / Math.max(0.001, displayTransform.scale)),
-    MIN_BRUSH_IMAGE_RADIUS,
-    MAX_BRUSH_IMAGE_RADIUS
-  );
-}
-
-function brushPointSpacingImagePx(): number {
-  return Math.max(1, BRUSH_POINT_SPACING_CSS_PX / Math.max(0.001, displayTransform.scale));
+function lassoPointSpacingImagePx(): number {
+  return Math.max(1, LASSO_POINT_SPACING_CSS_PX / Math.max(0.001, displayTransform.scale));
 }
 
 function imageDistance(a: ImagePixelPoint, b: ImagePixelPoint): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function polygonArea(points: ImagePixelPoint[]): number {
+  let area = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    area += current.x * next.y - next.x * current.y;
+  }
+  return Math.abs(area) / 2;
 }
 
 function setState(nextState: WorkbenchState, message: string): void {
@@ -662,6 +762,59 @@ function setState(nextState: WorkbenchState, message: string): void {
   );
   resetButton.disabled = !sourceCanvas || nextState === "processing-mask" || nextState === "copying";
   copyButton.disabled = !pngBlob || nextState === "processing-mask" || nextState === "copying" || nextState === "failed";
+  updateParameterPanelState();
+}
+
+function updateParameterPanelState(): void {
+  const controlsDisabled =
+    !sourceCanvas ||
+    !lastSelection ||
+    state === "loading-source" ||
+    state === "selecting-object" ||
+    state === "processing-mask" ||
+    state === "copying" ||
+    state === "failed";
+  parameterPanel.classList.toggle("is-disabled", controlsDisabled);
+  for (const control of parameterControls) {
+    control.input.disabled = controlsDisabled;
+  }
+
+  resetParametersButton.disabled =
+    !sourceCanvas ||
+    state === "loading-source" ||
+    state === "processing-mask" ||
+    state === "copying" ||
+    state === "failed";
+}
+
+function syncParameterInputs(): void {
+  for (const control of parameterControls) {
+    const value = maskTuningOptions[control.key];
+    control.input.value = String(value);
+    control.output.textContent = formatParameterValue(value);
+  }
+}
+
+function syncParameterOutputs(): void {
+  for (const control of parameterControls) {
+    control.output.textContent = formatParameterValue(maskTuningOptions[control.key]);
+  }
+}
+
+function readMaskTuningOptionsFromInputs(): MaskTuningOptions {
+  const next = cloneDefaultMaskTuningOptions();
+  for (const control of parameterControls) {
+    next[control.key] = Number(control.input.value);
+  }
+  return next;
+}
+
+function cloneDefaultMaskTuningOptions(): MaskTuningOptions {
+  return { ...DEFAULT_MASK_TUNING_OPTIONS };
+}
+
+function formatParameterValue(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function fail(message: string): void {

@@ -20,6 +20,45 @@
       </header>
       <main class="workspace">
         <canvas id="workbench-canvas" aria-label="Image workbench"></canvas>
+        <aside id="parameter-panel" class="parameter-panel" aria-label="마스크 조정">
+          <div class="parameter-panel-header">
+            <strong>조정</strong>
+            <button id="reset-parameters-button" type="button">초기화</button>
+          </div>
+          <label class="parameter-control">
+            <span class="parameter-label">민감도</span>
+            <input id="sensitivity-input" type="range" min="-50" max="50" value="0" />
+            <output id="sensitivity-value">0</output>
+          </label>
+          <label class="parameter-control">
+            <span class="parameter-label">확장</span>
+            <input id="expansion-input" type="range" min="-50" max="50" value="0" />
+            <output id="expansion-value">0</output>
+          </label>
+          <label class="parameter-control">
+            <span class="parameter-label">가장자리 정리</span>
+            <input id="edge-cleanup-input" type="range" min="-50" max="50" value="0" />
+            <output id="edge-cleanup-value">0</output>
+          </label>
+          <label class="parameter-control">
+            <span class="parameter-label">출력 여백</span>
+            <input id="output-padding-input" type="range" min="0" max="50" value="0" />
+            <output id="output-padding-value">0</output>
+          </label>
+          <details class="advanced-parameters">
+            <summary>고급</summary>
+            <label class="parameter-control">
+              <span class="parameter-label">시드 영향</span>
+              <input id="seed-influence-input" type="range" min="-50" max="50" value="0" />
+              <output id="seed-influence-value">0</output>
+            </label>
+            <label class="parameter-control">
+              <span class="parameter-label">거칠기</span>
+              <input id="roughness-input" type="range" min="0" max="50" value="24" />
+              <output id="roughness-value">24</output>
+            </label>
+          </details>
+        </aside>
         <div id="message" class="message">Loading source...</div>
       </main>
       <footer class="statusbar">

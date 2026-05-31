@@ -1,5 +1,7 @@
 # Seed Brush 변경 계획
 
+> Superseded: MVP 선택 방식은 이후 lasso seed로 다시 변경되었다. 최신 구현 계획은 `docs/lasso-seed-implementation-plan.md`를 기준으로 한다.
+
 ## 목적
 
 기존 MVP의 사각형 rect seed 선택을 foreground seed brush 방식으로 변경한다.

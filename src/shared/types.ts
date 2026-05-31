@@ -49,11 +49,24 @@ export type BrushSeedPoint = {
   radius: number;
 };
 
-export type ObjectSeedSelection = {
-  kind: "brush" | "rect" | "lasso";
+export type BrushSeedSelection = {
+  kind: "brush";
   bounds: ImagePixelRect;
   points: BrushSeedPoint[];
 };
+
+export type LassoSeedSelection = {
+  kind: "lasso";
+  bounds: ImagePixelRect;
+  polygon: ImagePixelPoint[];
+};
+
+export type RectSeedSelection = {
+  kind: "rect";
+  bounds: ImagePixelRect;
+};
+
+export type ObjectSeedSelection = BrushSeedSelection | LassoSeedSelection | RectSeedSelection;
 
 export type WorkbenchState =
   | "loading-source"

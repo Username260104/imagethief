@@ -1,5 +1,7 @@
 # ImageThief 제작 요구사항서
 
+> 구현 업데이트: MVP 선택 방식은 foreground seed brush에서 lasso seed로 변경되었다. lasso 관련 최신 구현 계획과 확정 결정은 `docs/lasso-seed-implementation-plan.md`를 기준으로 한다.
+
 ## 0. 문서 목적
 
 이 문서는 `ImageThief`라는 Chrome Extension Manifest V3 MVP를 구현하기 위한 제품/기술 요구사항서다.
