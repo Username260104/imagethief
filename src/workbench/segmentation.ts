@@ -1,11 +1,12 @@
 import {
   MAX_FOREGROUND_RATIO,
+  MAX_MASK_WORK_AREA_PIXELS,
   MIN_FOREGROUND_RATIO,
   OUTPUT_PADDING_MIN_PX,
   OUTPUT_PADDING_RATIO,
   SELECTION_PADDING_RATIO
 } from "../shared/constants";
-import type { ImagePixelRect, ObjectSeedSelection } from "../shared/types";
+import type { BrushSeedPoint, ImagePixelRect, ObjectSeedSelection } from "../shared/types";
 
 export type MaskResult = {
   workArea: ImagePixelRect;
@@ -25,27 +26,41 @@ type RgbMean = {
   count: number;
 };
 
+type BrushMask = {
+  mask: Uint8ClampedArray;
+  foregroundCount: number;
+  bounds: ImagePixelRect | null;
+};
+
 export function createRoughMask(
   sourceCanvas: HTMLCanvasElement,
   selection: ObjectSeedSelection
 ): MaskResult {
-  const seed = normalizeRect(selection.bounds, sourceCanvas.width, sourceCanvas.height);
-  if (seed.width <= 0 || seed.height <= 0) {
-    return createEmergencyMask(sourceCanvas, seed);
+  const seedBounds = normalizeRect(selection.bounds, sourceCanvas.width, sourceCanvas.height);
+  if (seedBounds.width <= 0 || seedBounds.height <= 0 || selection.points.length === 0) {
+    return createEmergencyMask(sourceCanvas, selection);
   }
 
-  const workArea = expandRectByRatio(seed, SELECTION_PADDING_RATIO, sourceCanvas.width, sourceCanvas.height);
+  const workArea = expandRectByRatio(seedBounds, SELECTION_PADDING_RATIO, sourceCanvas.width, sourceCanvas.height);
+  if (workArea.width * workArea.height > MAX_MASK_WORK_AREA_PIXELS) {
+    return createEmergencyMask(sourceCanvas, selection);
+  }
+
   const context = sourceCanvas.getContext("2d", { willReadFrequently: true });
   if (!context) {
-    return createEmergencyMask(sourceCanvas, seed);
+    return createEmergencyMask(sourceCanvas, selection);
   }
 
   const imageData = context.getImageData(workArea.x, workArea.y, workArea.width, workArea.height);
-  const foreground = sampleForeground(imageData.data, workArea, seed);
-  const background = sampleBackground(imageData.data, workArea, seed);
+  const seedMask = createBrushMask(workArea, selection.points, 1);
+  const nearSeedMask = createBrushMask(workArea, selection.points, 3);
+  const foreground = sampleMean(imageData.data, workArea, (_imageX, _imageY, localX, localY) => {
+    return seedMask.mask[localY * workArea.width + localX] > 0;
+  });
+  const background = sampleBackground(imageData.data, workArea, nearSeedMask.mask);
 
   if (foreground.count === 0 || background.count === 0) {
-    return createEmergencyMask(sourceCanvas, seed);
+    return createEmergencyMask(sourceCanvas, selection);
   }
 
   const mask = new Uint8ClampedArray(workArea.width * workArea.height);
@@ -54,30 +69,32 @@ export function createRoughMask(
   let minY = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
-  const centerX = seed.x + seed.width / 2;
-  const centerY = seed.y + seed.height / 2;
-  const radiusX = Math.max(1, seed.width / 2);
-  const radiusY = Math.max(1, seed.height / 2);
+  const border = Math.max(2, Math.round(Math.min(workArea.width, workArea.height) * 0.04));
 
   for (let y = 0; y < workArea.height; y += 1) {
     const imageY = workArea.y + y;
     for (let x = 0; x < workArea.width; x += 1) {
       const imageX = workArea.x + x;
-      const dataIndex = (y * workArea.width + x) * 4;
+      const maskIndex = y * workArea.width + x;
+      const dataIndex = maskIndex * 4;
       const r = imageData.data[dataIndex];
       const g = imageData.data[dataIndex + 1];
       const b = imageData.data[dataIndex + 2];
       const foregroundDistance = colorDistance(r, g, b, foreground);
       const backgroundDistance = colorDistance(r, g, b, background);
-      const normalizedDistance = Math.hypot((imageX - centerX) / radiusX, (imageY - centerY) / radiusY);
-      const centerPrior = Math.max(0, 1 - normalizedDistance / 1.5) * 36;
-      const insideSeed = pointInRect(imageX, imageY, seed);
-      const seedPrior = insideSeed ? 18 : -14;
+      const inSeed = seedMask.mask[maskIndex] > 0;
+      const nearSeed = nearSeedMask.mask[maskIndex] > 0;
+      const onBorder =
+        x < border ||
+        y < border ||
+        x >= workArea.width - border ||
+        y >= workArea.height - border;
+      const seedPrior = inSeed ? 38 : nearSeed ? 16 : -12;
+      const borderPrior = onBorder ? -18 : 0;
       const roughNoise = (hashNoise(imageX, imageY) - 0.5) * 30;
-      const score = backgroundDistance - foregroundDistance + centerPrior + seedPrior + roughNoise;
+      const score = backgroundDistance - foregroundDistance + seedPrior + borderPrior + roughNoise;
 
       if (score > 8) {
-        const maskIndex = y * workArea.width + x;
         mask[maskIndex] = 255;
         foregroundCount += 1;
         minX = Math.min(minX, imageX);
@@ -94,7 +111,7 @@ export function createRoughMask(
     foregroundRatio < MIN_FOREGROUND_RATIO ||
     foregroundRatio > MAX_FOREGROUND_RATIO
   ) {
-    return createEmergencyMask(sourceCanvas, seed);
+    return createEmergencyMask(sourceCanvas, selection);
   }
 
   const foregroundBounds = {
@@ -121,59 +138,91 @@ export function createRoughMask(
   };
 }
 
-function createEmergencyMask(sourceCanvas: HTMLCanvasElement, seed: ImagePixelRect): MaskResult {
-  const normalizedSeed = normalizeRect(seed, sourceCanvas.width, sourceCanvas.height);
+function createEmergencyMask(sourceCanvas: HTMLCanvasElement, selection: ObjectSeedSelection): MaskResult {
+  const seedBounds = normalizeRect(selection.bounds, sourceCanvas.width, sourceCanvas.height);
   const outputBounds = expandRectByPixels(
-    normalizedSeed,
-    outputPaddingFor(normalizedSeed),
+    seedBounds,
+    outputPaddingFor(seedBounds),
     sourceCanvas.width,
     sourceCanvas.height
   );
-  const mask = new Uint8ClampedArray(outputBounds.width * outputBounds.height);
-  let foregroundCount = 0;
-
-  for (let y = 0; y < outputBounds.height; y += 1) {
-    const imageY = outputBounds.y + y;
-    for (let x = 0; x < outputBounds.width; x += 1) {
-      const imageX = outputBounds.x + x;
-      if (pointInRect(imageX, imageY, normalizedSeed)) {
-        mask[y * outputBounds.width + x] = 255;
-        foregroundCount += 1;
-      }
-    }
-  }
+  const brushMask = createBrushMask(outputBounds, selection.points, 1.5);
+  const foregroundBounds = brushMask.bounds ?? seedBounds;
 
   return {
     workArea: outputBounds,
     width: outputBounds.width,
     height: outputBounds.height,
-    mask,
-    foregroundBounds: normalizedSeed,
+    mask: brushMask.mask,
+    foregroundBounds,
     outputBounds,
-    foregroundRatio: foregroundCount / Math.max(1, mask.length),
+    foregroundRatio: brushMask.foregroundCount / Math.max(1, brushMask.mask.length),
     usedEmergency: true
   };
 }
 
-function sampleForeground(data: Uint8ClampedArray, workArea: ImagePixelRect, seed: ImagePixelRect): RgbMean {
-  const inner = {
-    x: Math.round(seed.x + seed.width * 0.25),
-    y: Math.round(seed.y + seed.height * 0.25),
-    width: Math.max(1, Math.round(seed.width * 0.5)),
-    height: Math.max(1, Math.round(seed.height * 0.5))
+function createBrushMask(workArea: ImagePixelRect, points: BrushSeedPoint[], radiusMultiplier: number): BrushMask {
+  const mask = new Uint8ClampedArray(workArea.width * workArea.height);
+  let foregroundCount = 0;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const point of points) {
+    const radius = Math.max(1, Math.round(point.radius * radiusMultiplier));
+    const left = clamp(Math.floor(point.x - radius), workArea.x, workArea.x + workArea.width - 1);
+    const top = clamp(Math.floor(point.y - radius), workArea.y, workArea.y + workArea.height - 1);
+    const right = clamp(Math.ceil(point.x + radius), workArea.x, workArea.x + workArea.width - 1);
+    const bottom = clamp(Math.ceil(point.y + radius), workArea.y, workArea.y + workArea.height - 1);
+
+    for (let imageY = top; imageY <= bottom; imageY += 1) {
+      const localY = imageY - workArea.y;
+      for (let imageX = left; imageX <= right; imageX += 1) {
+        const localX = imageX - workArea.x;
+        if (Math.hypot(imageX - point.x, imageY - point.y) > radius) {
+          continue;
+        }
+
+        const maskIndex = localY * workArea.width + localX;
+        if (mask[maskIndex] > 0) {
+          continue;
+        }
+
+        mask[maskIndex] = 255;
+        foregroundCount += 1;
+        minX = Math.min(minX, imageX);
+        minY = Math.min(minY, imageY);
+        maxX = Math.max(maxX, imageX);
+        maxY = Math.max(maxY, imageY);
+      }
+    }
+  }
+
+  return {
+    mask,
+    foregroundCount,
+    bounds:
+      foregroundCount > 0
+        ? {
+            x: minX,
+            y: minY,
+            width: maxX - minX + 1,
+            height: maxY - minY + 1
+          }
+        : null
   };
-  return sampleMean(data, workArea, (imageX, imageY) => pointInRect(imageX, imageY, inner));
 }
 
-function sampleBackground(data: Uint8ClampedArray, workArea: ImagePixelRect, seed: ImagePixelRect): RgbMean {
+function sampleBackground(data: Uint8ClampedArray, workArea: ImagePixelRect, nearSeedMask: Uint8ClampedArray): RgbMean {
   const border = Math.max(2, Math.round(Math.min(workArea.width, workArea.height) * 0.08));
-  return sampleMean(data, workArea, (imageX, imageY, localX, localY) => {
+  return sampleMean(data, workArea, (_imageX, _imageY, localX, localY) => {
     const onBorder =
       localX < border ||
       localY < border ||
       localX >= workArea.width - border ||
       localY >= workArea.height - border;
-    return onBorder || !pointInRect(imageX, imageY, seed);
+    return onBorder || nearSeedMask[localY * workArea.width + localX] === 0;
   });
 }
 
@@ -257,10 +306,6 @@ function expandRectByPixels(
     width: right - x,
     height: bottom - y
   };
-}
-
-function pointInRect(x: number, y: number, rect: ImagePixelRect): boolean {
-  return x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height;
 }
 
 function hashNoise(x: number, y: number): number {

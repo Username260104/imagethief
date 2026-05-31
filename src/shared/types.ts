@@ -43,10 +43,16 @@ export type WorkbenchSession = {
   candidate: SourceImageCandidate;
 };
 
+export type BrushSeedPoint = {
+  x: number;
+  y: number;
+  radius: number;
+};
+
 export type ObjectSeedSelection = {
-  kind: "rect" | "lasso";
+  kind: "brush" | "rect" | "lasso";
   bounds: ImagePixelRect;
-  points?: ImagePixelPoint[];
+  points: BrushSeedPoint[];
 };
 
 export type WorkbenchState =

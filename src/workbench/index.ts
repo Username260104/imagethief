@@ -1,10 +1,16 @@
 import {
+  BRUSH_POINT_SPACING_CSS_PX,
+  BRUSH_RADIUS_CSS_PX,
   DEBUG,
+  MAX_BRUSH_IMAGE_RADIUS,
   MAX_DECODED_PIXELS,
+  MIN_BRUSH_IMAGE_RADIUS,
+  MIN_FOREGROUND_SEED_POINTS,
   MIN_OBJECT_SELECTION_SIZE,
   SESSION_STORAGE_PREFIX
 } from "../shared/constants";
 import type {
+  BrushSeedPoint,
   DisplayTransform,
   ImagePixelPoint,
   ImagePixelRect,
@@ -17,10 +23,9 @@ import "./style.css";
 
 type DecodedImage = ImageBitmap | HTMLImageElement;
 
-type DragState = {
+type BrushStrokeState = {
   pointerId: number;
-  start: ImagePixelPoint;
-  current: ImagePixelPoint;
+  points: BrushSeedPoint[];
 };
 
 const canvas = requiredElement<HTMLCanvasElement>("#workbench-canvas");
@@ -37,7 +42,8 @@ let state: WorkbenchState = "loading-source";
 let session: WorkbenchSession | null = null;
 let sourceCanvas: HTMLCanvasElement | null = null;
 let displayTransform: DisplayTransform = { scale: 1, offsetX: 0, offsetY: 0 };
-let dragState: DragState | null = null;
+let strokeState: BrushStrokeState | null = null;
+let brushCursorPoint: BrushSeedPoint | null = null;
 let lastSelection: ObjectSeedSelection | null = null;
 let maskResult: MaskResult | null = null;
 let previewCanvas: HTMLCanvasElement | null = null;
@@ -53,6 +59,7 @@ canvas.addEventListener("pointerdown", handlePointerDown);
 canvas.addEventListener("pointermove", handlePointerMove);
 canvas.addEventListener("pointerup", handlePointerUp);
 canvas.addEventListener("pointercancel", cancelDrag);
+canvas.addEventListener("pointerleave", handlePointerLeave);
 window.addEventListener("keydown", handleKeydown);
 resetButton.addEventListener("click", resetSelection);
 copyButton.addEventListener("click", () => {
@@ -71,7 +78,7 @@ async function initialize(): Promise<void> {
     session = await loadSession();
     metaElement.textContent = hostLabel(session.candidate.imageUrl);
     await loadSourceImage(session.candidate.imageUrl);
-    setState("ready", "Drag around an object.");
+    setState("ready", "Brush the object interior.");
     draw();
   } catch (error) {
     console.debug("ImageThief load failure", error);
@@ -188,6 +195,11 @@ function draw(): void {
     sourceCanvas.height * displayTransform.scale
   );
 
+  const seedPoints = strokeState?.points ?? lastSelection?.points ?? [];
+  if (seedPoints.length > 0) {
+    drawBrushSeed(seedPoints, strokeState ? "rgba(249,115,22,0.24)" : "rgba(249,115,22,0.16)");
+  }
+
   if (previewCanvas && maskResult) {
     context.drawImage(
       previewCanvas,
@@ -198,10 +210,12 @@ function draw(): void {
     );
   }
 
-  if (dragState) {
-    drawSelectionRect(rectFromPoints(dragState.start, dragState.current), "#f97316", "rgba(249,115,22,0.18)");
-  } else if (lastSelection) {
-    drawSelectionRect(lastSelection.bounds, "#1f7a8c", "rgba(31,122,140,0.12)");
+  if (lastSelection) {
+    drawSelectionBounds(lastSelection.bounds);
+  }
+
+  if (brushCursorPoint && (state === "ready" || state === "selecting-object" || state === "preview-ready" || state === "copied")) {
+    drawBrushCursor(brushCursorPoint);
   }
 }
 
@@ -242,19 +256,47 @@ function drawImageBackdrop(imageWidth: number, imageHeight: number): void {
   context.restore();
 }
 
-function drawSelectionRect(rect: ImagePixelRect, stroke: string, fill: string): void {
+function drawSelectionBounds(rect: ImagePixelRect): void {
   const x = displayTransform.offsetX + rect.x * displayTransform.scale;
   const y = displayTransform.offsetY + rect.y * displayTransform.scale;
   const width = rect.width * displayTransform.scale;
   const height = rect.height * displayTransform.scale;
 
   context.save();
-  context.fillStyle = fill;
-  context.strokeStyle = stroke;
+  context.strokeStyle = "#1f7a8c";
   context.lineWidth = 2;
   context.setLineDash([6, 5]);
-  context.fillRect(x, y, width, height);
   context.strokeRect(x, y, width, height);
+  context.restore();
+}
+
+function drawBrushSeed(points: BrushSeedPoint[], fill: string): void {
+  context.save();
+  context.fillStyle = fill;
+  context.strokeStyle = "rgba(249,115,22,0.45)";
+  context.lineWidth = 1;
+  for (const point of points) {
+    const x = displayTransform.offsetX + point.x * displayTransform.scale;
+    const y = displayTransform.offsetY + point.y * displayTransform.scale;
+    const radius = Math.max(1, point.radius * displayTransform.scale);
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.restore();
+}
+
+function drawBrushCursor(point: BrushSeedPoint): void {
+  const x = displayTransform.offsetX + point.x * displayTransform.scale;
+  const y = displayTransform.offsetY + point.y * displayTransform.scale;
+
+  context.save();
+  context.strokeStyle = "#111827";
+  context.lineWidth = 1.5;
+  context.setLineDash([4, 4]);
+  context.beginPath();
+  context.arc(x, y, BRUSH_RADIUS_CSS_PX, 0, Math.PI * 2);
+  context.stroke();
   context.restore();
 }
 
@@ -263,64 +305,80 @@ function handlePointerDown(event: PointerEvent): void {
     return;
   }
 
-  const point = displayPointToImagePoint(event.clientX, event.clientY);
+  const point = displayPointToBrushPoint(event.clientX, event.clientY);
   if (!point) {
     return;
   }
 
   canvas.setPointerCapture(event.pointerId);
-  dragState = {
+  strokeState = {
     pointerId: event.pointerId,
-    start: point,
-    current: point
+    points: [point]
   };
+  brushCursorPoint = point;
   pngBlob = null;
   maskResult = null;
   previewCanvas = null;
+  lastSelection = null;
   setState("selecting-object", "Selecting object...");
   draw();
 }
 
 function handlePointerMove(event: PointerEvent): void {
-  if (!dragState) {
-    return;
-  }
-
-  const point = displayPointToImagePoint(event.clientX, event.clientY);
+  const point = displayPointToBrushPoint(event.clientX, event.clientY);
   if (!point) {
+    if (!strokeState) {
+      brushCursorPoint = null;
+      draw();
+    }
     return;
   }
 
-  dragState.current = point;
+  brushCursorPoint = point;
+  if (!strokeState) {
+    draw();
+    return;
+  }
+
+  const lastPoint = strokeState.points.at(-1);
+  if (!lastPoint || imageDistance(lastPoint, point) >= brushPointSpacingImagePx()) {
+    strokeState.points.push(point);
+  }
   draw();
 }
 
 function handlePointerUp(event: PointerEvent): void {
-  if (!dragState || event.pointerId !== dragState.pointerId) {
+  if (!strokeState || event.pointerId !== strokeState.pointerId) {
     return;
   }
 
-  const selection = rectFromPoints(dragState.start, dragState.current);
+  const selection = selectionFromBrushPoints(strokeState.points);
   canvas.releasePointerCapture(event.pointerId);
-  dragState = null;
+  strokeState = null;
 
-  if (selection.width < MIN_OBJECT_SELECTION_SIZE || selection.height < MIN_OBJECT_SELECTION_SIZE) {
+  if (isBrushSelectionTooSmall(selection)) {
     lastSelection = null;
     setState("ready", "Selection is too small");
     draw();
     return;
   }
 
-  lastSelection = {
-    kind: "rect",
-    bounds: selection
-  };
+  lastSelection = selection;
   void processSelection(lastSelection);
 }
 
 function cancelDrag(): void {
-  dragState = null;
-  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Drag around an object." : "Loading source...");
+  strokeState = null;
+  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Brush the object interior." : "Loading source...");
+  draw();
+}
+
+function handlePointerLeave(): void {
+  if (strokeState) {
+    return;
+  }
+
+  brushCursorPoint = null;
   draw();
 }
 
@@ -329,7 +387,7 @@ function handleKeydown(event: KeyboardEvent): void {
     return;
   }
 
-  if (dragState) {
+  if (strokeState) {
     event.preventDefault();
     cancelDrag();
     return;
@@ -365,12 +423,12 @@ async function processSelection(selection: ObjectSeedSelection): Promise<void> {
 }
 
 function resetSelection(): void {
-  dragState = null;
+  strokeState = null;
   lastSelection = null;
   maskResult = null;
   previewCanvas = null;
   pngBlob = null;
-  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Drag around an object." : "Loading source...");
+  setState(sourceCanvas ? "ready" : "loading-source", sourceCanvas ? "Brush the object interior." : "Loading source...");
   draw();
 }
 
@@ -520,15 +578,78 @@ function displayPointToImagePoint(clientX: number, clientY: number): ImagePixelP
   };
 }
 
-function rectFromPoints(start: ImagePixelPoint, end: ImagePixelPoint): ImagePixelRect {
-  const x = Math.min(start.x, end.x);
-  const y = Math.min(start.y, end.y);
+function displayPointToBrushPoint(clientX: number, clientY: number): BrushSeedPoint | null {
+  const point = displayPointToImagePoint(clientX, clientY);
+  if (!point) {
+    return null;
+  }
+
   return {
-    x,
-    y,
-    width: Math.abs(end.x - start.x) + 1,
-    height: Math.abs(end.y - start.y) + 1
+    ...point,
+    radius: brushRadiusImagePx()
   };
+}
+
+function selectionFromBrushPoints(points: BrushSeedPoint[]): ObjectSeedSelection {
+  if (!sourceCanvas || points.length === 0) {
+    return {
+      kind: "brush",
+      bounds: { x: 0, y: 0, width: 0, height: 0 },
+      points: []
+    };
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const point of points) {
+    minX = Math.min(minX, point.x - point.radius);
+    minY = Math.min(minY, point.y - point.radius);
+    maxX = Math.max(maxX, point.x + point.radius);
+    maxY = Math.max(maxY, point.y + point.radius);
+  }
+
+  const x = clamp(Math.floor(minX), 0, Math.max(0, sourceCanvas.width - 1));
+  const y = clamp(Math.floor(minY), 0, Math.max(0, sourceCanvas.height - 1));
+  const right = clamp(Math.ceil(maxX), x + 1, sourceCanvas.width);
+  const bottom = clamp(Math.ceil(maxY), y + 1, sourceCanvas.height);
+
+  return {
+    kind: "brush",
+    bounds: {
+      x,
+      y,
+      width: right - x,
+      height: bottom - y
+    },
+    points
+  };
+}
+
+function isBrushSelectionTooSmall(selection: ObjectSeedSelection): boolean {
+  return (
+    selection.points.length < MIN_FOREGROUND_SEED_POINTS ||
+    selection.bounds.width < MIN_OBJECT_SELECTION_SIZE ||
+    selection.bounds.height < MIN_OBJECT_SELECTION_SIZE
+  );
+}
+
+function brushRadiusImagePx(): number {
+  return clamp(
+    Math.round(BRUSH_RADIUS_CSS_PX / Math.max(0.001, displayTransform.scale)),
+    MIN_BRUSH_IMAGE_RADIUS,
+    MAX_BRUSH_IMAGE_RADIUS
+  );
+}
+
+function brushPointSpacingImagePx(): number {
+  return Math.max(1, BRUSH_POINT_SPACING_CSS_PX / Math.max(0.001, displayTransform.scale));
+}
+
+function imageDistance(a: ImagePixelPoint, b: ImagePixelPoint): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function setState(nextState: WorkbenchState, message: string): void {

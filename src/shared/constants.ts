@@ -1,7 +1,13 @@
 export const DEBUG = false;
 export const SESSION_STORAGE_PREFIX = "imagethief:session:";
 export const MAX_DECODED_PIXELS = 64_000_000;
+export const MAX_MASK_WORK_AREA_PIXELS = 4_000_000;
 export const MIN_OBJECT_SELECTION_SIZE = 8;
+export const BRUSH_RADIUS_CSS_PX = 18;
+export const BRUSH_POINT_SPACING_CSS_PX = 8;
+export const MIN_BRUSH_IMAGE_RADIUS = 3;
+export const MAX_BRUSH_IMAGE_RADIUS = 128;
+export const MIN_FOREGROUND_SEED_POINTS = 3;
 export const SELECTION_PADDING_RATIO = 0.08;
 export const OUTPUT_PADDING_MIN_PX = 4;
 export const OUTPUT_PADDING_RATIO = 0.02;
