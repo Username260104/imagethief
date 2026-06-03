@@ -11,8 +11,8 @@ body,
 }
 
 body {
-  background: #efede7;
-  color: #242424;
+  background: #f2f2f2;
+  color: #222222;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -20,10 +20,10 @@ body {
 button {
   min-width: 40px;
   height: 34px;
-  border: 1px solid #c9c3b8;
+  border: 1px solid #c8c8c8;
   border-radius: 6px;
-  background: #fbfaf7;
-  color: #242424;
+  background: #f8f8f8;
+  color: #222222;
   font: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -31,23 +31,23 @@ button {
 
 button:hover:not(:disabled) {
   background: #ffffff;
-  border-color: #8c8173;
+  border-color: #8a8a8a;
 }
 
 button:disabled {
-  color: #928b82;
+  color: #989898;
   cursor: not-allowed;
   opacity: 0.68;
 }
 
 button.primary {
-  border-color: #185f73;
-  background: #1f7a8c;
+  border-color: #2f2f2f;
+  background: #2f2f2f;
   color: #ffffff;
 }
 
 button.primary:hover:not(:disabled) {
-  background: #16697a;
+  background: #1f1f1f;
 }
 
 .toolbar,
@@ -56,14 +56,14 @@ button.primary:hover:not(:disabled) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border-color: #d8d2c8;
-  background: #f8f6f0;
+  border-color: #d6d6d6;
+  background: #f6f6f6;
 }
 
 .toolbar {
   height: 54px;
   padding: 0 14px;
-  border-bottom: 1px solid #d8d2c8;
+  border-bottom: 1px solid #d6d6d6;
 }
 
 .identity {
@@ -81,7 +81,7 @@ button.primary:hover:not(:disabled) {
 #status,
 #debug-readout {
   overflow: hidden;
-  color: #655f57;
+  color: #666666;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -97,7 +97,7 @@ button.primary:hover:not(:disabled) {
   position: relative;
   height: calc(100% - 86px);
   overflow: hidden;
-  background: #ded8ce;
+  background: #dcdcdc;
 }
 
 #workbench-canvas {
@@ -113,11 +113,11 @@ button.primary:hover:not(:disabled) {
   right: 12px;
   width: min(280px, calc(100% - 24px));
   padding: 10px;
-  border: 1px solid #d8d2c8;
+  border: 1px solid #d6d6d6;
   border-radius: 6px;
-  background: rgba(248, 246, 240, 0.96);
-  box-shadow: 0 10px 30px rgba(36, 36, 36, 0.14);
-  color: #242424;
+  background: rgba(250, 250, 250, 0.96);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+  color: #222222;
   font-size: 12px;
 }
 
@@ -153,7 +153,7 @@ button.primary:hover:not(:disabled) {
 
 .parameter-label {
   overflow: hidden;
-  color: #3f3a34;
+  color: #3f3f3f;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -161,11 +161,19 @@ button.primary:hover:not(:disabled) {
 .parameter-control input[type="range"] {
   width: 100%;
   margin: 0;
-  accent-color: #1f7a8c;
+  accent-color: #4a4a4a;
+}
+
+.parameter-control input[type="checkbox"] {
+  justify-self: start;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #4a4a4a;
 }
 
 .parameter-control output {
-  color: #655f57;
+  color: #666666;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -177,12 +185,12 @@ button.primary:hover:not(:disabled) {
 .advanced-parameters {
   margin-top: 8px;
   padding-top: 6px;
-  border-top: 1px solid #d8d2c8;
+  border-top: 1px solid #d6d6d6;
 }
 
 .advanced-parameters summary {
   cursor: pointer;
-  color: #655f57;
+  color: #666666;
   font-size: 12px;
 }
 
@@ -197,10 +205,10 @@ button.primary:hover:not(:disabled) {
   display: none;
   max-width: min(420px, calc(100% - 40px));
   transform: translate(-50%, -50%);
-  border: 1px solid #cfc7ba;
+  border: 1px solid #d0d0d0;
   border-radius: 8px;
-  background: rgba(251, 250, 247, 0.94);
-  color: #3f3a34;
+  background: rgba(252, 252, 252, 0.94);
+  color: #333333;
   padding: 12px 14px;
   font-size: 13px;
   text-align: center;
@@ -213,7 +221,7 @@ button.primary:hover:not(:disabled) {
 .statusbar {
   height: 32px;
   padding: 0 12px;
-  border-top: 1px solid #d8d2c8;
+  border-top: 1px solid #d6d6d6;
 }
 
 @media (max-width: 640px) {

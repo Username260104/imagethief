@@ -350,7 +350,7 @@ UI label:
 내부 매핑:
 
 ```text
-현재 roughNoiseAmount = 24, 실제 영향 +/-12
+현재 roughNoiseAmount = 0, 실제 영향 없음
 UI 범위: 0 ~ 50
 기본값: 24 또는 UI 24
 계산:
@@ -507,13 +507,13 @@ export type MaskTuningOptions = {
 };
 
 export const DEFAULT_MASK_TUNING_OPTIONS: MaskTuningOptions = {
-  sensitivity: 0,
+  sensitivity: 35,
   expansion: 0,
   edgeCleanup: 0,
   outputPadding: 0,
   seedInfluence: 0,
   backgroundRange: 0,
-  roughness: 24,
+  roughness: 0,
   maskAdjustment: 0,
   fillHoles: false,
   removeSpeckles: false
@@ -625,7 +625,7 @@ Reset Selection은 lasso/preview/pngBlob만 초기화한다.
 
   <label class="parameter-control">
     <span>민감도</span>
-    <input id="sensitivity-input" type="range" min="-50" max="50" value="0" />
+    <input id="sensitivity-input" type="range" min="-50" max="50" value="35" />
   </label>
 
   <label class="parameter-control">

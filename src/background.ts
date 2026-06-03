@@ -24,6 +24,10 @@ type CandidateSelectedMessage = {
   candidate: SourceImageCandidate;
 };
 
+type OpenWorkbenchOverlayResponse = {
+  ok?: boolean;
+};
+
 type WorkbenchSession = {
   id: string;
   createdAt: number;
@@ -83,6 +87,28 @@ async function openWorkbench(candidate: SourceImageCandidate, openerTabId?: numb
   });
 
   const url = chrome.runtime.getURL(`workbench.html?sessionId=${encodeURIComponent(id)}`);
+  const overlayUrl = `${url}&embedded=1`;
+  if (typeof openerTabId === "number" && (await tryOpenWorkbenchOverlay(openerTabId, overlayUrl))) {
+    return;
+  }
+
+  await openWorkbenchTab(url, openerTabId);
+}
+
+async function tryOpenWorkbenchOverlay(tabId: number, url: string): Promise<boolean> {
+  try {
+    const response = (await chrome.tabs.sendMessage(tabId, {
+      type: "IMAGE_THIEF_OPEN_WORKBENCH_OVERLAY",
+      url
+    })) as OpenWorkbenchOverlayResponse | undefined;
+    return response?.ok === true;
+  } catch (error) {
+    console.debug("ImageThief overlay launch failed", error);
+    return false;
+  }
+}
+
+async function openWorkbenchTab(url: string, openerTabId?: number): Promise<void> {
   const createProperties: { url: string; active: boolean; openerTabId?: number } = {
     url,
     active: true

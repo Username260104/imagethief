@@ -454,7 +454,7 @@ roughNoiseAmount 유지.
 
 ```text
 region growing에서 noise가 크면 얇은 leak path가 생길 수 있다.
-기본 roughness 24는 유지하되, 사용자가 낮출 수 있게 둔다.
+기본 roughness 0은 유지하되, 사용자가 높일 수 있게 둔다.
 ```
 
 ### 출력 여백

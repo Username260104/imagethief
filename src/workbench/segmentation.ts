@@ -31,15 +31,17 @@ export type MaskTuningOptions = {
   outputPadding: number;
   seedInfluence: number;
   roughness: number;
+  fillHoles: number;
 };
 
 export const DEFAULT_MASK_TUNING_OPTIONS: MaskTuningOptions = {
-  sensitivity: 0,
+  sensitivity: 35,
   expansion: 0,
   edgeCleanup: 0,
   outputPadding: 0,
   seedInfluence: 0,
-  roughness: 24
+  roughness: 0,
+  fillHoles: 0
 };
 
 type RgbMean = {
@@ -64,6 +66,7 @@ type ResolvedMaskTuning = {
   borderPenalty: number;
   backgroundBorderRatio: number;
   roughNoiseAmount: number;
+  fillHoles: boolean;
   outputPaddingMinPx: number;
   outputPaddingRatio: number;
   maxVisitedPixels: number;
@@ -457,9 +460,14 @@ function createMaskResultFromBounds(
   tuning: ResolvedMaskTuning,
   requireMinimumRatio: boolean
 ): MaskResult | null {
-  const foregroundRatio = foregroundCount / Math.max(1, mask.length);
+  let finalForegroundCount = foregroundCount;
+  if (tuning.fillHoles) {
+    finalForegroundCount += fillMaskHoles(mask, workArea.width, workArea.height);
+  }
+
+  const foregroundRatio = finalForegroundCount / Math.max(1, mask.length);
   if (
-    foregroundCount === 0 ||
+    finalForegroundCount === 0 ||
     (requireMinimumRatio && foregroundRatio < MIN_FOREGROUND_RATIO) ||
     foregroundRatio > MAX_FOREGROUND_RATIO
   ) {
@@ -496,7 +504,9 @@ function resolveMaskTuning(options: MaskTuningOptions): ResolvedMaskTuning {
   const edgeCleanup = clamp(options.edgeCleanup, -50, 50);
   const outputPadding = clamp(options.outputPadding, 0, 50);
   const seedInfluence = clamp(options.seedInfluence, -50, 50);
-  const roughness = clamp(options.roughness, 0, 50);
+  const roughness = clamp(options.roughness, 0, 100);
+  const fillHoles = clamp(options.fillHoles, 0, 1);
+  const roughNoiseAmount = roughness <= 50 ? roughness : 50 + (roughness - 50) * 1.4;
   const scoreThreshold = 8 - sensitivity * 0.4;
   const expansionNormalized = (expansion + 50) / 100;
 
@@ -514,7 +524,8 @@ function resolveMaskTuning(options: MaskTuningOptions): ResolvedMaskTuning {
     outsideSeedPrior: -12 - seedInfluence * 0.08,
     borderPenalty: -18 - edgeCleanup * 0.3,
     backgroundBorderRatio: clamp(0.08 + edgeCleanup * 0.0008, 0.03, 0.14),
-    roughNoiseAmount: roughness,
+    roughNoiseAmount,
+    fillHoles: fillHoles >= 1,
     outputPaddingMinPx: OUTPUT_PADDING_MIN_PX + outputPadding,
     outputPaddingRatio: OUTPUT_PADDING_RATIO + outputPadding * 0.001,
     maxVisitedPixels: MAX_CONNECTED_VISITED_PIXELS,
@@ -570,7 +581,7 @@ function scoreMaskPixel(
         : context.tuning.outsideSeedPrior
     : 0;
   const borderPrior = onBorder ? context.tuning.borderPenalty : 0;
-  const roughNoise = (hashNoise(imageX, imageY) - 0.5) * context.tuning.roughNoiseAmount;
+  const roughNoise = roughScoreNoise(imageX, imageY, context.tuning.roughNoiseAmount);
   return backgroundDistance - foregroundDistance + seedPrior + borderPrior + roughNoise;
 }
 
@@ -918,6 +929,70 @@ function outputPaddingFor(rect: ImagePixelRect, tuning: ResolvedMaskTuning): num
   return Math.max(tuning.outputPaddingMinPx, Math.round(Math.max(rect.width, rect.height) * tuning.outputPaddingRatio));
 }
 
+function fillMaskHoles(mask: Uint8ClampedArray, width: number, height: number): number {
+  const pixelCount = width * height;
+  if (pixelCount === 0) {
+    return 0;
+  }
+
+  const reachableBackground = new Uint8Array(pixelCount);
+  const queue = new Int32Array(pixelCount);
+  let queueStart = 0;
+  let queueEnd = 0;
+
+  const enqueueBackground = (index: number): void => {
+    if (index < 0 || index >= pixelCount || mask[index] > 0 || reachableBackground[index] > 0) {
+      return;
+    }
+
+    reachableBackground[index] = 1;
+    queue[queueEnd] = index;
+    queueEnd += 1;
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    enqueueBackground(x);
+    enqueueBackground((height - 1) * width + x);
+  }
+
+  for (let y = 1; y < height - 1; y += 1) {
+    enqueueBackground(y * width);
+    enqueueBackground(y * width + width - 1);
+  }
+
+  while (queueStart < queueEnd) {
+    const index = queue[queueStart];
+    queueStart += 1;
+    const y = Math.floor(index / width);
+    const x = index - y * width;
+
+    if (x > 0) {
+      enqueueBackground(index - 1);
+    }
+    if (x < width - 1) {
+      enqueueBackground(index + 1);
+    }
+    if (y > 0) {
+      enqueueBackground(index - width);
+    }
+    if (y < height - 1) {
+      enqueueBackground(index + width);
+    }
+  }
+
+  let filledCount = 0;
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (mask[index] > 0 || reachableBackground[index] > 0) {
+      continue;
+    }
+
+    mask[index] = 255;
+    filledCount += 1;
+  }
+
+  return filledCount;
+}
+
 function normalizeRect(rect: ImagePixelRect, maxWidth: number, maxHeight: number): ImagePixelRect {
   const x = clamp(Math.floor(rect.x), 0, Math.max(0, maxWidth - 1));
   const y = clamp(Math.floor(rect.y), 0, Math.max(0, maxHeight - 1));
@@ -957,6 +1032,28 @@ function expandRectByPixels(
     width: right - x,
     height: bottom - y
   };
+}
+
+function roughScoreNoise(x: number, y: number, amount: number): number {
+  if (amount <= 0) {
+    return 0;
+  }
+
+  const fineAmount = Math.min(amount, 50);
+  const extraAmount = Math.max(0, amount - 50);
+  const fineNoise = (hashNoise(x, y) - 0.5) * fineAmount;
+  if (extraAmount <= 0) {
+    return fineNoise;
+  }
+
+  const mediumCell = clamp(Math.round(4 + extraAmount * 0.1), 4, 12);
+  const broadCell = mediumCell * 3;
+  const mediumNoise =
+    (hashNoise(Math.floor(x / mediumCell), Math.floor(y / mediumCell)) - 0.5) * extraAmount * 1.4;
+  const broadNoise =
+    (hashNoise(Math.floor(x / broadCell), Math.floor(y / broadCell)) - 0.5) * extraAmount * 0.8;
+
+  return fineNoise + mediumNoise + broadNoise;
 }
 
 function hashNoise(x: number, y: number): number {

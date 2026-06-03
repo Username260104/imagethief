@@ -24,31 +24,58 @@ type CandidateWithElement = {
   element: Element;
 };
 
+type OpenWorkbenchOverlayMessage = {
+  type: "IMAGE_THIEF_OPEN_WORKBENCH_OVERLAY";
+  url: string;
+};
+
+type ImageThiefController = {
+  start(): void;
+  stop(): void;
+  openWorkbenchOverlay(url: string): Promise<boolean>;
+  closeWorkbenchOverlay(): void;
+};
+
 type ImageThiefWindow = Window & {
-  __imageThiefContent?: {
-    start(): void;
-    stop(): void;
-  };
+  __imageThiefContent?: ImageThiefController;
 };
 
 const win = window as ImageThiefWindow;
+const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL("")).origin;
+const WORKBENCH_OVERLAY_LOAD_TIMEOUT_MS = 3000;
+const WORKBENCH_CLOSE_MESSAGE_TYPE = "IMAGE_THIEF_CLOSE_WORKBENCH_OVERLAY";
 
 if (win.__imageThiefContent) {
   win.__imageThiefContent.start();
 } else {
   const controller = createController();
   win.__imageThiefContent = controller;
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (isStartSelectionMessage(message)) {
       controller.start();
+      sendResponse({ ok: true });
+      return false;
     }
+
+    if (isOpenWorkbenchOverlayMessage(message)) {
+      void controller.openWorkbenchOverlay(message.url).then((ok) => {
+        sendResponse({ ok });
+      });
+      return true;
+    }
+
+    return false;
   });
   controller.start();
 }
 
-function createController(): { start(): void; stop(): void } {
+function createController(): ImageThiefController {
   let active = false;
   let current: CandidateWithElement | null = null;
+  let overlayHost: HTMLElement | null = null;
+  let overlayFrame: HTMLIFrameElement | null = null;
+  let lastFocusedElement: HTMLElement | null = null;
+  let overlayLoadTimer = 0;
 
   const highlight = document.createElement("div");
   highlight.style.cssText = [
@@ -56,9 +83,9 @@ function createController(): { start(): void; stop(): void } {
     "display:none",
     "pointer-events:none",
     "box-sizing:border-box",
-    "border:2px solid #f97316",
-    "background:rgba(249,115,22,0.12)",
-    "box-shadow:0 0 0 99999px rgba(17,24,39,0.08)",
+    "border:2px solid #6b6b6b",
+    "background:rgba(0,0,0,0.10)",
+    "box-shadow:0 0 0 99999px rgba(0,0,0,0.08)",
     "z-index:2147483647"
   ].join(";");
 
@@ -88,7 +115,7 @@ function createController(): { start(): void; stop(): void } {
     "transform:translateX(-50%)",
     "padding:7px 10px",
     "border-radius:6px",
-    "background:#7f1d1d",
+    "background:#2f2f2f",
     "color:white",
     "font:12px/1.4 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif",
     "z-index:2147483647",
@@ -97,9 +124,13 @@ function createController(): { start(): void; stop(): void } {
 
   let toastTimer = 0;
 
+  window.addEventListener("message", handleWorkbenchMessage);
+
   return {
     start,
-    stop
+    stop,
+    openWorkbenchOverlay,
+    closeWorkbenchOverlay
   };
 
   function start(): void {
@@ -107,6 +138,7 @@ function createController(): { start(): void; stop(): void } {
       return;
     }
 
+    closeWorkbenchOverlay();
     active = true;
     current = null;
     document.documentElement.append(highlight, label, toast);
@@ -133,6 +165,103 @@ function createController(): { start(): void; stop(): void } {
     window.removeEventListener("keydown", handleKeydown, true);
     window.removeEventListener("scroll", handleScrollOrResize, true);
     window.removeEventListener("resize", handleScrollOrResize, true);
+  }
+
+  function openWorkbenchOverlay(url: string): Promise<boolean> {
+    stop();
+    closeWorkbenchOverlay();
+
+    if (!isExtensionWorkbenchUrl(url)) {
+      return Promise.resolve(false);
+    }
+
+    const activeElement = document.activeElement;
+    lastFocusedElement = activeElement instanceof HTMLElement ? activeElement : null;
+
+    const host = document.createElement("div");
+    host.style.cssText = [
+      "position:fixed",
+      "inset:0",
+      "width:100vw",
+      "height:100vh",
+      "z-index:2147483647",
+      "background:rgba(0,0,0,0.6)",
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "padding:24px",
+      "pointer-events:auto"
+    ].join(";");
+
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = [
+      ":host{all:initial}",
+      "iframe{display:block;width:min(1280px,calc(100vw - 48px));height:min(900px,calc(100vh - 48px));border:0;border-radius:8px;background:#f2f2f2;box-shadow:0 24px 80px rgba(0,0,0,0.34);color-scheme:normal}",
+      "@media (max-width:640px){iframe{width:calc(100vw - 16px);height:calc(100vh - 16px);border-radius:6px}}"
+    ].join("");
+
+    const frame = document.createElement("iframe");
+    frame.src = url;
+    frame.title = "ImageThief Workbench";
+    frame.allow = "clipboard-write";
+    shadow.append(style, frame);
+
+    overlayHost = host;
+    overlayFrame = frame;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (ok: boolean): void => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        window.clearTimeout(overlayLoadTimer);
+        overlayLoadTimer = 0;
+        frame.removeEventListener("load", handleLoad);
+        frame.removeEventListener("error", handleError);
+
+        if (!ok) {
+          closeWorkbenchOverlay();
+        } else {
+          requestAnimationFrame(() => frame.focus());
+        }
+
+        resolve(ok);
+      };
+      const handleLoad = (): void => settle(true);
+      const handleError = (): void => settle(false);
+
+      frame.addEventListener("load", handleLoad, { once: true });
+      frame.addEventListener("error", handleError, { once: true });
+      overlayLoadTimer = window.setTimeout(() => settle(false), WORKBENCH_OVERLAY_LOAD_TIMEOUT_MS);
+      document.documentElement.append(host);
+    });
+  }
+
+  function closeWorkbenchOverlay(): void {
+    window.clearTimeout(overlayLoadTimer);
+    overlayLoadTimer = 0;
+    overlayHost?.remove();
+    overlayHost = null;
+    overlayFrame = null;
+
+    if (lastFocusedElement?.isConnected) {
+      lastFocusedElement.focus({ preventScroll: true });
+    }
+    lastFocusedElement = null;
+  }
+
+  function handleWorkbenchMessage(event: MessageEvent): void {
+    if (!overlayFrame || event.source !== overlayFrame.contentWindow || event.origin !== EXTENSION_ORIGIN) {
+      return;
+    }
+
+    if (isWorkbenchCloseMessage(event.data)) {
+      closeWorkbenchOverlay();
+    }
   }
 
   function handlePointerMove(event: PointerEvent): void {
@@ -359,4 +488,30 @@ function isStartSelectionMessage(message: unknown): boolean {
     typeof message === "object" &&
     (message as { type?: unknown }).type === "IMAGE_THIEF_START_SELECTION"
   );
+}
+
+function isOpenWorkbenchOverlayMessage(message: unknown): message is OpenWorkbenchOverlayMessage {
+  return (
+    Boolean(message) &&
+    typeof message === "object" &&
+    (message as { type?: unknown }).type === "IMAGE_THIEF_OPEN_WORKBENCH_OVERLAY" &&
+    typeof (message as { url?: unknown }).url === "string"
+  );
+}
+
+function isWorkbenchCloseMessage(message: unknown): boolean {
+  return (
+    Boolean(message) &&
+    typeof message === "object" &&
+    (message as { type?: unknown }).type === WORKBENCH_CLOSE_MESSAGE_TYPE
+  );
+}
+
+function isExtensionWorkbenchUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.origin === EXTENSION_ORIGIN && url.pathname.endsWith("/workbench.html");
+  } catch {
+    return false;
+  }
 }

@@ -31,10 +31,24 @@ type LassoStrokeState = {
   polygon: ImagePixelPoint[];
 };
 
+type AutoCopyReason = "selection" | "parameters";
+
+type CopyTrigger = "auto-selection" | "auto-parameters" | "manual";
+
+type ClipboardCopyRequest = {
+  blob: Blob;
+  trigger: CopyTrigger;
+  requestId: number;
+};
+
+const EMBEDDED_WORKBENCH = new URLSearchParams(location.search).get("embedded") === "1";
+const WORKBENCH_CLOSE_MESSAGE_TYPE = "IMAGE_THIEF_CLOSE_WORKBENCH_OVERLAY";
+
 type ParameterControl = {
   key: keyof MaskTuningOptions;
   input: HTMLInputElement;
   output: HTMLOutputElement;
+  kind?: "range" | "toggle";
 };
 
 const canvas = requiredElement<HTMLCanvasElement>("#workbench-canvas");
@@ -65,6 +79,12 @@ const parameterControls: ParameterControl[] = [
     output: requiredElement<HTMLOutputElement>("#edge-cleanup-value")
   },
   {
+    key: "fillHoles",
+    input: requiredElement<HTMLInputElement>("#fill-holes-input"),
+    output: requiredElement<HTMLOutputElement>("#fill-holes-value"),
+    kind: "toggle"
+  },
+  {
     key: "outputPadding",
     input: requiredElement<HTMLInputElement>("#output-padding-input"),
     output: requiredElement<HTMLOutputElement>("#output-padding-value")
@@ -92,6 +112,10 @@ let previewCanvas: HTMLCanvasElement | null = null;
 let pngBlob: Blob | null = null;
 let maskTuningOptions: MaskTuningOptions = cloneDefaultMaskTuningOptions();
 let parameterReprocessTimer = 0;
+let selectionProcessRunId = 0;
+let clipboardWriteRequestId = 0;
+let clipboardWriteActive = false;
+let pendingClipboardCopy: ClipboardCopyRequest | null = null;
 
 const resizeObserver = new ResizeObserver(() => {
   resizeCanvas();
@@ -106,11 +130,12 @@ canvas.addEventListener("pointercancel", cancelDrag);
 window.addEventListener("keydown", handleKeydown);
 resetButton.addEventListener("click", resetSelection);
 copyButton.addEventListener("click", () => {
-  void copyPng();
+  copyCurrentPng("manual");
 });
-closeButton.addEventListener("click", () => {
-  window.close();
-});
+if (EMBEDDED_WORKBENCH) {
+  closeButton.textContent = "Close";
+}
+closeButton.addEventListener("click", closeWorkbench);
 resetParametersButton.addEventListener("click", resetParameters);
 for (const control of parameterControls) {
   control.input.addEventListener("input", handleParameterInput);
@@ -225,7 +250,7 @@ function draw(): void {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
   context.clearRect(0, 0, cssWidth, cssHeight);
-  context.fillStyle = "#ded8ce";
+  context.fillStyle = "#dcdcdc";
   context.fillRect(0, 0, cssWidth, cssHeight);
 
   if (!sourceCanvas) {
@@ -304,7 +329,7 @@ function drawImageBackdrop(imageWidth: number, imageHeight: number): void {
   context.clip();
   for (let row = 0; row < height / tile + 1; row += 1) {
     for (let col = 0; col < width / tile + 1; col += 1) {
-      context.fillStyle = (row + col) % 2 === 0 ? "#f7f4ed" : "#e6e0d6";
+      context.fillStyle = (row + col) % 2 === 0 ? "#f7f7f7" : "#e5e5e5";
       context.fillRect(x + col * tile, y + row * tile, tile, tile);
     }
   }
@@ -318,7 +343,7 @@ function drawSelectionBounds(rect: ImagePixelRect): void {
   const height = rect.height * displayTransform.scale;
 
   context.save();
-  context.strokeStyle = "#1f7a8c";
+  context.strokeStyle = "#4f4f4f";
   context.lineWidth = 2;
   context.setLineDash([6, 5]);
   context.strokeRect(x, y, width, height);
@@ -371,6 +396,7 @@ function handlePointerDown(event: PointerEvent): void {
   }
 
   event.preventDefault();
+  invalidateSelectionAndClipboardWork();
   window.clearTimeout(parameterReprocessTimer);
   canvas.setPointerCapture(event.pointerId);
   lassoState = {
@@ -430,7 +456,7 @@ function handlePointerUp(event: PointerEvent): void {
   }
 
   lastSelection = selection;
-  void processSelection(lastSelection);
+  void processSelection(lastSelection, "selection");
 }
 
 function cancelDrag(): void {
@@ -456,17 +482,29 @@ function handleKeydown(event: KeyboardEvent): void {
   }
 }
 
-async function processSelection(selection: ObjectSeedSelection): Promise<void> {
+async function processSelection(selection: ObjectSeedSelection, autoCopyReason: AutoCopyReason): Promise<void> {
   if (!sourceCanvas) {
     return;
   }
+
+  const runId = ++selectionProcessRunId;
+  invalidateClipboardWork();
 
   try {
     setState("processing-mask", "Creating rough outline...");
     draw();
     await nextFrame();
-    maskResult = createRoughMask(sourceCanvas, selection, maskTuningOptions);
-    if (!maskResult) {
+    if (!isCurrentSelectionProcess(runId)) {
+      return;
+    }
+
+    const nextMaskResult = createRoughMask(sourceCanvas, selection, maskTuningOptions);
+    if (!nextMaskResult) {
+      if (!isCurrentSelectionProcess(runId)) {
+        return;
+      }
+
+      maskResult = null;
       previewCanvas = null;
       pngBlob = null;
       setState("ready", "No confident mask. Adjust parameters or trace a tighter lasso.");
@@ -475,20 +513,33 @@ async function processSelection(selection: ObjectSeedSelection): Promise<void> {
       return;
     }
 
-    previewCanvas = createPreviewCanvas(maskResult);
-    pngBlob = await createPngBlob(sourceCanvas, maskResult);
-    setState("preview-ready", maskResult.usedEmergency ? "Preview ready (rough fallback)" : "Preview ready");
-    debug("mask foreground ratio", maskResult.foregroundRatio.toFixed(3));
-    debug("output bounding box", maskResult.outputBounds);
-    debug("output PNG size", pngBlob.size);
+    const nextPreviewCanvas = createPreviewCanvas(nextMaskResult);
+    const nextPngBlob = await createPngBlob(sourceCanvas, nextMaskResult);
+    if (!isCurrentSelectionProcess(runId)) {
+      return;
+    }
+
+    maskResult = nextMaskResult;
+    previewCanvas = nextPreviewCanvas;
+    pngBlob = nextPngBlob;
+    setState("preview-ready", nextMaskResult.usedEmergency ? "Preview ready (rough fallback)" : "Preview ready");
+    debug("mask foreground ratio", nextMaskResult.foregroundRatio.toFixed(3));
+    debug("output bounding box", nextMaskResult.outputBounds);
+    debug("output PNG size", nextPngBlob.size);
     draw();
+    copyCurrentPng(autoCopyReason === "selection" ? "auto-selection" : "auto-parameters");
   } catch (error) {
+    if (!isCurrentSelectionProcess(runId)) {
+      return;
+    }
+
     console.debug("ImageThief PNG failure", error);
     fail("Unable to create PNG");
   }
 }
 
 function resetSelection(): void {
+  invalidateSelectionAndClipboardWork();
   window.clearTimeout(parameterReprocessTimer);
   lassoState = null;
   lastSelection = null;
@@ -499,12 +550,21 @@ function resetSelection(): void {
   draw();
 }
 
+function closeWorkbench(): void {
+  if (EMBEDDED_WORKBENCH && window.parent !== window) {
+    window.parent.postMessage({ type: WORKBENCH_CLOSE_MESSAGE_TYPE }, "*");
+    return;
+  }
+
+  window.close();
+}
+
 function resetParameters(): void {
   window.clearTimeout(parameterReprocessTimer);
   maskTuningOptions = cloneDefaultMaskTuningOptions();
   syncParameterInputs();
   if (lastSelection) {
-    void processSelection(lastSelection);
+    void processSelection(lastSelection, "parameters");
     return;
   }
 
@@ -519,6 +579,7 @@ function handleParameterInput(): void {
 
 function scheduleParameterReprocess(): void {
   window.clearTimeout(parameterReprocessTimer);
+  invalidateClipboardWork();
   if (
     !lastSelection ||
     state === "loading-source" ||
@@ -536,31 +597,97 @@ function scheduleParameterReprocess(): void {
   statusElement.textContent = "Adjusting preview...";
   parameterReprocessTimer = window.setTimeout(() => {
     if (lastSelection) {
-      void processSelection(lastSelection);
+      void processSelection(lastSelection, "parameters");
     }
   }, 150);
 }
 
-async function copyPng(): Promise<void> {
+function copyCurrentPng(trigger: CopyTrigger): void {
   if (!pngBlob || !maskResult) {
     setState("preview-ready", "Unable to create PNG");
     return;
   }
 
+  const request: ClipboardCopyRequest = {
+    blob: pngBlob,
+    trigger,
+    requestId: ++clipboardWriteRequestId
+  };
+
+  if (clipboardWriteActive) {
+    pendingClipboardCopy = request;
+    updateCopyStartMessage(trigger);
+    return;
+  }
+
+  void runClipboardCopy(request);
+}
+
+async function runClipboardCopy(request: ClipboardCopyRequest): Promise<void> {
+  clipboardWriteActive = true;
+  updateCopyStartMessage(request.trigger);
+
   try {
-    setState("copying", "Copying PNG...");
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        "image/png": pngBlob
-      })
-    ]);
-    setState("copied", "Copied PNG");
-    debug("clipboard success", true);
+    await writePngToClipboard(request.blob);
+    if (isCurrentClipboardRequest(request)) {
+      setState("copied", copySuccessMessage(request.trigger));
+      debug("clipboard success", request.trigger);
+    }
   } catch (error) {
     console.debug("ImageThief clipboard failure", error);
-    setState("preview-ready", "Unable to copy PNG");
-    debug("clipboard success", false);
+    if (isCurrentClipboardRequest(request)) {
+      setState("preview-ready", request.trigger === "manual" ? "Unable to copy PNG" : "Auto copy failed. Use Copy Again.");
+      debug("clipboard success", false);
+    }
+  } finally {
+    const nextRequest = pendingClipboardCopy;
+    pendingClipboardCopy = null;
+    if (nextRequest && isCurrentClipboardRequest(nextRequest)) {
+      void runClipboardCopy(nextRequest);
+      return;
+    }
+
+    clipboardWriteActive = false;
   }
+}
+
+async function writePngToClipboard(blob: Blob): Promise<void> {
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      "image/png": blob
+    })
+  ]);
+}
+
+function invalidateSelectionAndClipboardWork(): void {
+  selectionProcessRunId += 1;
+  invalidateClipboardWork();
+}
+
+function invalidateClipboardWork(): void {
+  clipboardWriteRequestId += 1;
+  pendingClipboardCopy = null;
+}
+
+function isCurrentSelectionProcess(runId: number): boolean {
+  return runId === selectionProcessRunId;
+}
+
+function isCurrentClipboardRequest(request: ClipboardCopyRequest): boolean {
+  return request.requestId === clipboardWriteRequestId;
+}
+
+function updateCopyStartMessage(trigger: CopyTrigger): void {
+  if (trigger === "manual") {
+    setState("copying", "Copying PNG...");
+    return;
+  }
+
+  statusElement.textContent = trigger === "auto-parameters" ? "Updating clipboard..." : "Copying PNG...";
+}
+
+function copySuccessMessage(trigger: CopyTrigger): string {
+  return trigger === "auto-parameters" ? "Updated clipboard" : "Copied PNG";
 }
 
 function createPreviewCanvas(result: MaskResult): HTMLCanvasElement {
@@ -790,21 +917,27 @@ function updateParameterPanelState(): void {
 function syncParameterInputs(): void {
   for (const control of parameterControls) {
     const value = maskTuningOptions[control.key];
-    control.input.value = String(value);
-    control.output.textContent = formatParameterValue(value);
+    if (control.kind === "toggle") {
+      control.input.checked = value >= 1;
+      control.output.textContent = formatToggleValue(value);
+    } else {
+      control.input.value = String(value);
+      control.output.textContent = formatParameterValue(value);
+    }
   }
 }
 
 function syncParameterOutputs(): void {
   for (const control of parameterControls) {
-    control.output.textContent = formatParameterValue(maskTuningOptions[control.key]);
+    const value = maskTuningOptions[control.key];
+    control.output.textContent = control.kind === "toggle" ? formatToggleValue(value) : formatParameterValue(value);
   }
 }
 
 function readMaskTuningOptionsFromInputs(): MaskTuningOptions {
   const next = cloneDefaultMaskTuningOptions();
   for (const control of parameterControls) {
-    next[control.key] = Number(control.input.value);
+    next[control.key] = control.kind === "toggle" ? Number(control.input.checked) : Number(control.input.value);
   }
   return next;
 }
@@ -815,6 +948,10 @@ function cloneDefaultMaskTuningOptions(): MaskTuningOptions {
 
 function formatParameterValue(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatToggleValue(value: number): string {
+  return value >= 1 ? "켬" : "끔";
 }
 
 function fail(message: string): void {

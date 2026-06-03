@@ -14,7 +14,7 @@
         </div>
         <div class="actions">
           <button id="reset-button" type="button" disabled>Reset Selection</button>
-          <button id="copy-button" class="primary" type="button" disabled>Copy PNG</button>
+          <button id="copy-button" class="primary" type="button" disabled>Copy Again</button>
           <button id="close-button" type="button">Back</button>
         </div>
       </header>
@@ -27,8 +27,8 @@
           </div>
           <label class="parameter-control">
             <span class="parameter-label">민감도</span>
-            <input id="sensitivity-input" type="range" min="-50" max="50" value="0" />
-            <output id="sensitivity-value">0</output>
+            <input id="sensitivity-input" type="range" min="-50" max="50" value="35" />
+            <output id="sensitivity-value">35</output>
           </label>
           <label class="parameter-control">
             <span class="parameter-label">확장</span>
@@ -39,6 +39,11 @@
             <span class="parameter-label">가장자리 정리</span>
             <input id="edge-cleanup-input" type="range" min="-50" max="50" value="0" />
             <output id="edge-cleanup-value">0</output>
+          </label>
+          <label class="parameter-control parameter-control-toggle">
+            <span class="parameter-label">구멍 메우기</span>
+            <input id="fill-holes-input" type="checkbox" />
+            <output id="fill-holes-value">끔</output>
           </label>
           <label class="parameter-control">
             <span class="parameter-label">출력 여백</span>
@@ -54,8 +59,8 @@
             </label>
             <label class="parameter-control">
               <span class="parameter-label">거칠기</span>
-              <input id="roughness-input" type="range" min="0" max="50" value="24" />
-              <output id="roughness-value">24</output>
+              <input id="roughness-input" type="range" min="0" max="100" value="0" />
+              <output id="roughness-value">0</output>
             </label>
           </details>
         </aside>
